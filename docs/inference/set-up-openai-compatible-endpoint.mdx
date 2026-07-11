@@ -25,7 +25,7 @@ The following example starts vLLM on port `8000`.
 vllm serve meta-llama/Llama-3.1-8B-Instruct --host 0.0.0.0 --port 8000
 ```
 
-Port `8000` is included in the `local-inference` network policy preset.
+Port `8000` is one of NemoClaw's bundled host-gateway ports.
 
 <Warning>
 The examples on this page listen on every IPv4 interface so both host-side onboarding and a containerized gateway can reach the server.
@@ -45,11 +45,19 @@ $$nemoclaw onboard
 Select **Other OpenAI-compatible endpoint**.
 Enter the server base URL and the model ID reported by the server.
 
-Use `http://localhost:8000/v1` when the default Docker-driver topology makes the host endpoint reachable at that address.
-For a containerized OpenShell gateway that cannot reach host `localhost`, use the host-gateway URL for your environment, commonly `http://host.openshell.internal:8000/v1`.
+Use a host-routable URL such as `http://localhost:8000/v1` when you want onboarding to verify the API, tool-calling, and streaming paths before gateway registration.
+To qualify for automatic rewriting, an HTTP endpoint URL must use the exact loopback host `localhost`, `127.0.0.1`, or `[::1]`.
+Automatic rewriting is limited to NemoClaw's bundled host-gateway ports: `8000`, `11434`, and `11435`.
+NemoClaw validates the entered URL from the host and registers the OpenShell gateway route through `host.openshell.internal:<port>` for sandbox traffic.
+Sandbox inference requests continue to use the base `inference.local` policy, so the managed compatible-endpoint route does not require adding the `local-inference` preset.
+NemoClaw leaves URLs without an explicit port, URLs on `:80` or another privileged port, and URLs on unsupported ports unchanged.
+Those URLs require a separately compatible runtime topology and network policy.
+This rewrite depends on an OpenShell topology that resolves `host.openshell.internal` inside the sandbox; if that bridge is unavailable, onboarding can still validate the host URL, but `$$nemoclaw <name> status` is the authoritative runtime check.
+Make sure the server listens on an address reachable from containers, such as `0.0.0.0`; a server bound only to `127.0.0.1` can still be unreachable from the sandbox route.
 
-For host-routable endpoints, NemoClaw verifies the API, tool-calling, and streaming paths before sandbox creation.
-The host-side endpoint probe is skipped for the sandbox-internal `host.openshell.internal` alias, so verify the runtime route after onboarding when you use that address.
+If you manually enter a sandbox-internal alias such as `http://host.openshell.internal:8000/v1`, host-side endpoint probing is skipped during onboarding.
+Use a host-routable endpoint such as `localhost` when you need onboarding to verify the API, tool-calling, and streaming paths before gateway registration.
+Otherwise, verify the runtime route after onboarding with `$$nemoclaw <name> status` and a short agent request.
 
 The wizard prompts for an API key.
 Enter any non-empty placeholder such as `dummy` when the server does not require authentication.

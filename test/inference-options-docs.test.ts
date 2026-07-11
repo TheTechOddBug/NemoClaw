@@ -34,6 +34,12 @@ const compatibleEndpointPath = path.join(
   "inference",
   "set-up-openai-compatible-endpoint.mdx",
 );
+const inferenceRoutingPath = path.join(
+  repoRoot,
+  "docs",
+  "inference",
+  "how-inference-routing-works.mdx",
+);
 const compatibleApiPath = path.join(
   repoRoot,
   "docs",
@@ -242,7 +248,7 @@ describe("inference setup navigation", () => {
     expect(markdown).toContain("[Set Up NVIDIA NIM](set-up-nvidia-nim)");
   });
 
-  it("uses container-reachable binds with restricted exposure guidance", () => {
+  it("uses container-reachable binds with restricted exposure guidance (#5744)", () => {
     const markdown = fs.readFileSync(compatibleEndpointPath, "utf8");
     const hostValues = Array.from(
       markdown.matchAll(/--host(?:=|\s+)([^\s`\\]+)/g),
@@ -343,7 +349,39 @@ describe("inference setup navigation", () => {
     expect(result).toMatchObject({ api: null, label: null, ok: true });
     expect(result.note).toContain("validation skipped");
     expect(markdown).toContain("`http://host.openshell.internal:8000/v1`");
-    expect(markdown).toContain("host-side endpoint probe is skipped");
+    expect(markdown).toContain(
+      "To qualify for automatic rewriting, an HTTP endpoint URL must use the exact loopback host `localhost`, `127.0.0.1`, or `[::1]`.",
+    );
+    expect(markdown).toContain(
+      "Automatic rewriting is limited to NemoClaw's bundled host-gateway ports: `8000`, `11434`, and `11435`.",
+    );
+    expect(markdown).toContain(
+      "NemoClaw validates the entered URL from the host and registers the OpenShell gateway route through `host.openshell.internal:<port>` for sandbox traffic.",
+    );
+    expect(markdown).toContain(
+      "Sandbox inference requests continue to use the base `inference.local` policy, so the managed compatible-endpoint route does not require adding the `local-inference` preset.",
+    );
+    expect(markdown).toContain(
+      "NemoClaw leaves URLs without an explicit port, URLs on `:80` or another privileged port, and URLs on unsupported ports unchanged.",
+    );
+    expect(markdown).not.toContain("the default HTTP port or an unprivileged port");
+    expect(markdown).toContain(
+      "if that bridge is unavailable, onboarding can still validate the host URL, but `$$nemoclaw <name> status` is the authoritative runtime check.",
+    );
+    expect(markdown).toContain(
+      "If you manually enter a sandbox-internal alias such as `http://host.openshell.internal:8000/v1`, host-side endpoint probing is skipped during onboarding.",
+    );
+    expect(markdown).toContain(
+      "Use a host-routable endpoint such as `localhost` when you need onboarding to verify the API, tool-calling, and streaming paths",
+    );
+  });
+
+  it("documents credential-free recovery of automatically bridged routes (#5744)", () => {
+    const markdown = fs.readFileSync(inferenceRoutingPath, "utf8");
+
+    expect(markdown).toContain(
+      "When a rebuild reuses an automatically bridged compatible-endpoint route without a host API key, NemoClaw reapplies the config-only bridge rewrite without reading or passing the credential stored in OpenShell.",
+    );
   });
 
   it("keeps provider credentials out of documented helper argv", () => {
@@ -372,9 +410,7 @@ describe("inference setup navigation", () => {
     expect(vllm).toContain(
       "NemoClaw uses that value for the configured context window unless you set `NEMOCLAW_CONTEXT_WINDOW`.",
     );
-    expect(endpoint).toContain(
-      "Port `8000` is included in the `local-inference` network policy preset.",
-    );
+    expect(endpoint).toContain("Port `8000` is one of NemoClaw's bundled host-gateway ports.");
     expect(vllm).toContain("Docker's `--restart unless-stopped` policy");
     expect(verification).toContain(
       "The `Inference` row checks the sandbox's `inference.local` path",
