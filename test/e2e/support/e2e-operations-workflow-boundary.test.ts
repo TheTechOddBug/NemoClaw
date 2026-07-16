@@ -152,9 +152,9 @@ describe("E2E operations workflow boundary", () => {
         "cloud-onboard must not hold issues: write",
         "cloud-onboard must not hold pull-requests: write",
         "report-to-pr must not hold issues: write",
-        "report-to-pr must hold only actions: read and pull-requests: write",
+        "report-to-pr must hold only actions: read, contents: read, and pull-requests: write",
         "report-to-pr must run only for manual workflow dispatches",
-        "report-to-pr must contain only its PR-comment step",
+        "report-to-pr must first check out the trusted workflow revision, then post its PR comment",
         "report-to-pr must not use issue mutations or generic GitHub write surfaces",
       ]),
     );
@@ -179,6 +179,29 @@ describe("E2E operations workflow boundary", () => {
       expect.arrayContaining([
         "report-to-pr must limit issue mutation to one validated PR-scoped createComment call",
         "report-to-pr must not use issue mutations or generic GitHub write surfaces",
+      ]),
+    );
+  });
+
+  it("requires prNumber and report to originate from the trusted resolveReportPr and renderE2eReport calls", () => {
+    const workflow = readE2eOperationsWorkflow();
+    const report = workflow.jobs["report-to-pr"].steps!.find(
+      (step) => step.name === "Post E2E target results to PR",
+    )!;
+    report.with!.script = String(report.with!.script)
+      .replace(
+        "const prNumber = await resolveReportPr({ github, context, core, env: process.env });",
+        "const prNumber = 5093;",
+      )
+      .replace(
+        /const report = renderE2eReport\([^;]*\);/,
+        "const report = { body: 'fake', warnings: [] };",
+      );
+
+    expect(validateE2eOperationsWorkflow(workflow)).toEqual(
+      expect.arrayContaining([
+        "report-to-pr must derive prNumber from the trusted resolveReportPr call",
+        "report-to-pr must derive report from the trusted renderE2eReport call",
       ]),
     );
   });

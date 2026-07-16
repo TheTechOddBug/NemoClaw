@@ -321,6 +321,20 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function extractCallArguments(script: string, callStart: number): string {
+  const openIndex = script.indexOf("(", callStart);
+  if (openIndex < 0) return "";
+  let depth = 0;
+  for (let index = openIndex; index < script.length; index += 1) {
+    if (script[index] === "(") depth += 1;
+    else if (script[index] === ")") {
+      depth -= 1;
+      if (depth === 0) return script.slice(openIndex + 1, index);
+    }
+  }
+  return script.slice(openIndex + 1);
+}
+
 function splitSelector(value: string): string[] {
   return value
     .split(",")
@@ -4267,135 +4281,84 @@ export function validateE2eWorkflow(workflowValue: unknown): string[] {
       errors.push("report-to-pr must derive explicit-only jobs from workflow inventory");
     }
     const reportScript = stringValue(asRecord(report?.with).script ?? report?.run);
-    if (!reportScript.includes("process.env.JOBS")) {
-      errors.push("step 'Post E2E target results to PR' run script must include process.env.JOBS");
-    }
-    if (!reportScript.includes("process.env.JOB_TARGETS")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must include process.env.JOB_TARGETS",
-      );
-    }
-    if (reportScript.includes("Number.parseInt(prNumberInput")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must not parse JOB_PR_NUMBER with Number.parseInt",
-      );
-    }
-    if (!reportScript.includes("/^[1-9][0-9]*$/.test(prNumberInput)")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must validate JOB_PR_NUMBER with an all-digits regex before parsing",
-      );
-    }
-    if (!reportScript.includes("Number.isSafeInteger(prNumber)")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must reject unsafe JOB_PR_NUMBER values before commenting",
-      );
-    }
     if (
-      !reportScript.includes("github.rest.pulls.get") ||
-      !reportScript.includes("pull_number: prNumber")
+      !reportScript.includes("tools/e2e/report-e2e-results.mts") ||
+      !reportScript.includes("process.env.GITHUB_WORKSPACE")
     ) {
       errors.push(
-        "step 'Post E2E target results to PR' run script must verify JOB_PR_NUMBER identifies a pull request before commenting",
+        "step 'Post E2E target results to PR' run script must load the trusted report helper from the checked-out workspace",
       );
     }
-    if (
-      !reportScript.includes("github.rest.pulls.list") ||
-      !reportScript.includes("head: `${context.repo.owner}:${workflowBranch}`")
-    ) {
+    const prNumberAssignment = /\b(?:const|let)\s+(\w+)\s*=\s*await\s+resolveReportPr\(/.exec(
+      reportScript,
+    );
+    if (!prNumberAssignment) {
       errors.push(
-        "step 'Post E2E target results to PR' run script must fall back to branch PR lookup when JOB_PR_NUMBER is empty",
+        "step 'Post E2E target results to PR' run script must assign resolveReportPr's result before use",
       );
-    }
-    if (!reportScript.includes("selectorValidationPassed")) {
+    } else if (!new RegExp(`issue_number:\\s*${prNumberAssignment[1]}\\b`).test(reportScript)) {
       errors.push(
-        "step 'Post E2E target results to PR' run script must check selector validation before echoing selectors",
+        "step 'Post E2E target results to PR' run script must pass resolveReportPr's result as the comment issue_number",
       );
     }
-    if (!reportScript.includes("testIdsRejected")) {
+    const loadJobsAssignment = /\{\s*([^}]+)\}\s*=\s*await\s+loadReportJobs\(/.exec(reportScript);
+    if (!loadJobsAssignment) {
       errors.push(
-        "step 'Post E2E target results to PR' run script must omit rejected test ID selectors",
+        "step 'Post E2E target results to PR' run script must destructure loadReportJobs's result before use",
       );
+    } else {
+      const renderCallIndex = reportScript.indexOf("renderE2eReport(");
+      const renderArguments =
+        renderCallIndex >= 0 ? extractCallArguments(reportScript, renderCallIndex) : "";
+      const loadedNames = loadJobsAssignment[1]
+        .split(",")
+        .map((name) => name.split(":").pop()?.trim())
+        .filter((name): name is string => Boolean(name));
+      if (!loadedNames.some((name) => new RegExp(`\\b${name}\\b`).test(renderArguments))) {
+        errors.push(
+          "step 'Post E2E target results to PR' run script must pass loadReportJobs's result into renderE2eReport",
+        );
+      }
     }
-    if (!reportScript.includes("targetsRejected")) {
+    const reportAssignment = /\b(?:const|let)\s+(\w+)\s*=\s*renderE2eReport\(/.exec(reportScript);
+    if (!reportAssignment) {
       errors.push(
-        "step 'Post E2E target results to PR' run script must omit rejected target selectors",
+        "step 'Post E2E target results to PR' run script must assign renderE2eReport's result before use",
       );
-    }
-    if (!reportScript.includes("reportedEntries")) {
+    } else if (!new RegExp(`body:\\s*${reportAssignment[1]}\\.body\\b`).test(reportScript)) {
       errors.push(
-        "step 'Post E2E target results to PR' run script must filter reported entries for selective dispatches",
+        "step 'Post E2E target results to PR' run script must pass renderE2eReport's result body as the comment body",
       );
     }
-    if (!reportScript.includes("missingRequested")) {
+    if (reportScript.includes("checkout_sha")) {
       errors.push(
-        "step 'Post E2E target results to PR' run script must report missing requested jobs",
+        "step 'Post E2E target results to PR' run script must not reference checkout_sha",
       );
     }
-    if (
-      !reportScript.includes("github.rest.actions.listJobsForWorkflowRun") ||
-      !reportScript.includes("Shared E2E") ||
-      !reportScript.includes("testResults")
-    ) {
-      errors.push(
-        "step 'Post E2E target results to PR' must resolve discovered matrix test results from the jobs API",
+    const reportCheckout = reportSteps.find((step) =>
+      stringValue(asRecord(step).uses).startsWith("actions/checkout@"),
+    );
+    if (!reportCheckout) {
+      errors.push("report-to-pr must check out the trusted workflow revision before reporting");
+    } else {
+      const checkoutWith = asRecord(asRecord(reportCheckout).with);
+      if (checkoutWith.ref !== "${{ github.workflow_sha }}") {
+        errors.push("report-to-pr must pin the report helper checkout to github.workflow_sha");
+      }
+      if (checkoutWith["persist-credentials"] !== false) {
+        errors.push("report-to-pr report helper checkout must not persist credentials");
+      }
+      if (
+        !stringValue(checkoutWith["sparse-checkout"]).includes("tools/e2e/report-e2e-results.mts")
+      ) {
+        errors.push("report-to-pr report helper checkout must sparse-checkout the report helper");
+      }
+      const reportStepIndex = reportSteps.findIndex(
+        (step) => asRecord(step).name === "Post E2E target results to PR",
       );
-    }
-    if (
-      !reportScript.includes("Number.isSafeInteger(job.id)") ||
-      !reportScript.includes("job.id > 0") ||
-      !reportScript.includes("`${runUrl}/job/${job.id}`")
-    ) {
-      errors.push(
-        "step 'Post E2E target results to PR' must build same-run job links only from positive safe-integer job IDs",
-      );
-    }
-    if (!reportScript.includes("cancelled")) {
-      errors.push("step 'Post E2E target results to PR' run script must count cancelled jobs");
-    }
-    if (!reportScript.includes("**Requested test IDs:**")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must include **Requested test IDs:**",
-      );
-    }
-    if (!reportScript.includes("**Requested targets:**")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must include **Requested targets:**",
-      );
-    }
-    if (!reportScript.includes("All default tests passed")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must label empty dispatch as default tests passed",
-      );
-    }
-    if (!reportScript.includes("default-enabled tests")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must say empty dispatch uses default-enabled tests",
-      );
-    }
-    if (!reportScript.includes("Explicit-only jobs skipped")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must list explicit-only skipped jobs on default dispatch",
-      );
-    }
-    if (!reportScript.includes("jobs=${job}") || !reportScript.includes("jetson-nvmap-gpu")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must document the explicit Jetson jobs selector",
-      );
-    }
-    if (!reportScript.includes("targets=${target}") || !reportScript.includes("jetson-nvmap-gpu")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must document the explicit Jetson target selector",
-      );
-    }
-    if (!reportScript.includes("sandbox-rlimits-connect")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must document the explicit rlimit jobs selector",
-      );
-    }
-    if (!reportScript.includes("sandbox-rlimits-connect")) {
-      errors.push(
-        "step 'Post E2E target results to PR' run script must document the explicit rlimit target selector",
-      );
+      if (reportStepIndex >= 0 && reportSteps.indexOf(reportCheckout) >= reportStepIndex) {
+        errors.push("report-to-pr must check out the report helper before the reporting step");
+      }
     }
     for (const forbidden of ["toJSON(inputs.pr_number)", "toJSON(inputs.targets)"]) {
       if (reportScript.includes(forbidden)) {
